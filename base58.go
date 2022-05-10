@@ -7,7 +7,6 @@ import (
 
 var b58Alphabet = []byte("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 
-// Base58Encode encodes a byte array to Base58
 func Base58Encode(input []byte) []byte {
 	var result []byte
 
@@ -34,7 +33,6 @@ func Base58Encode(input []byte) []byte {
 	return result
 }
 
-// Base58Decode decodes Base58-encoded data
 func Base58Decode(input []byte) []byte {
 	result := big.NewInt(0)
 	zeroBytes := 0

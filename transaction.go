@@ -22,12 +22,10 @@ type Transaction struct {
 	Vout []TXOutput
 }
 
-// IsCoinbase checks whether the transaction is coinbase
 func (tx Transaction) IsCoinbase() bool {
 	return len(tx.Vin) == 1 && len(tx.Vin[0].Txid) == 0 && tx.Vin[0].Vout == -1
 }
 
-// Serialize returns a serialized Transaction
 func (tx Transaction) Serialize() []byte {
 	var encoded bytes.Buffer
 
@@ -40,7 +38,6 @@ func (tx Transaction) Serialize() []byte {
 	return encoded.Bytes()
 }
 
-// Hash returns the hash of the Transaction
 func (tx *Transaction) Hash() []byte {
 	var hash [32]byte
 
@@ -82,7 +79,6 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 	}
 }
 
-// String returns a human-readable representation of a transaction
 func (tx Transaction) String() string {
 	var lines []string
 
@@ -106,7 +102,6 @@ func (tx Transaction) String() string {
 	return strings.Join(lines, "\n")
 }
 
-// TrimmedCopy creates a trimmed copy of Transaction to be used in signing
 func (tx *Transaction) TrimmedCopy() Transaction {
 	var inputs []TXInput
 	var outputs []TXOutput
@@ -124,7 +119,6 @@ func (tx *Transaction) TrimmedCopy() Transaction {
 	return txCopy
 }
 
-// Verify verifies signatures of Transaction inputs
 func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 	if tx.IsCoinbase() {
 		return true
@@ -167,25 +161,21 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 	return true
 }
 
-// TXOutput represents a transaction output
 type TXOutput struct {
 	Value      int
 	PubKeyHash []byte
 }
 
-// Lock signs the output
 func (out *TXOutput) Lock(address []byte) {
 	pubKeyHash := Base58Decode(address)
 	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
 	out.PubKeyHash = pubKeyHash
 }
 
-// IsLockedWithKey checks if the output can be used by the owner of the pubkey
 func (out *TXOutput) IsLockedWithKey(pubKeyHash []byte) bool {
 	return bytes.Compare(out.PubKeyHash, pubKeyHash) == 0
 }
 
-// NewTXOutput create a new TXOutput
 func NewTXOutput(value int, address string) *TXOutput {
 	txo := &TXOutput{value, nil}
 	txo.Lock([]byte(address))
@@ -193,7 +183,34 @@ func NewTXOutput(value int, address string) *TXOutput {
 	return txo
 }
 
-// TXInput represents a transaction input
+type TXOutputs struct {
+	Outputs []TXOutput
+}
+
+func (outs TXOutputs) Serialize() []byte {
+	var buff bytes.Buffer
+
+	enc := gob.NewEncoder(&buff)
+	err := enc.Encode(outs)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return buff.Bytes()
+}
+
+func DeserializeOutputs(data []byte) TXOutputs {
+	var outputs TXOutputs
+
+	dec := gob.NewDecoder(bytes.NewReader(data))
+	err := dec.Decode(&outputs)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return outputs
+}
+
 type TXInput struct {
 	Txid      []byte
 	Vout      int
@@ -201,7 +218,6 @@ type TXInput struct {
 	PubKey    []byte
 }
 
-// UsesKey checks whether the address initiated the transaction
 func (in *TXInput) UsesKey(pubKeyHash []byte) bool {
 	lockingHash := HashPubKey(in.PubKey)
 
@@ -210,7 +226,10 @@ func (in *TXInput) UsesKey(pubKeyHash []byte) bool {
 
 func NewCoinbaseTX(to, data string) *Transaction {
 	if data == "" {
-		data = fmt.Sprintf("Reward to '%s'", to)
+		randData := make([]byte, 20)
+		rand.Read(randData)
+
+		data = fmt.Sprintf("%x", randData)
 	}
 
 	txin := TXInput{[]byte{}, -1, nil, []byte(data)}
@@ -221,8 +240,7 @@ func NewCoinbaseTX(to, data string) *Transaction {
 	return &tx
 }
 
-// NewUTXOTransaction creates a new transaction
-func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transaction {
+func NewUTXOTransaction(from, to string, amount int, UTXOSet *UTXOSet) *Transaction {
 	var inputs []TXInput
 	var outputs []TXOutput
 
@@ -230,7 +248,7 @@ func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transactio
 
 	wallet := wallets.GetWallet(from)
 	pubKeyHash := HashPubKey(wallet.PublicKey)
-	acc, validOutputs := bc.FindSpendableOutputs(pubKeyHash, amount)
+	acc, validOutputs := UTXOSet.FindSpendableOutputs(pubKeyHash, amount)
 
 	if acc < amount {
 		log.Panic("ERROR: Not enough funds")
@@ -254,7 +272,7 @@ func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transactio
 
 	tx := Transaction{nil, inputs, outputs}
 	tx.ID = tx.Hash()
-	bc.SignTransaction(&tx, wallet.PrivateKey)
+	UTXOSet.Blockchain.SignTransaction(&tx, wallet.PrivateKey)
 
 	return &tx
 }
