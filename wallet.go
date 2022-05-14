@@ -9,14 +9,13 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 
 	"golang.org/x/crypto/ripemd160"
 )
 
-const version = byte(0x00)
-const walletFile = "wallet.dat"
+const ver = byte(0x00)
+const wallet = "wallet_%s.dat"
 const addressChecksumLen = 4
 
 type Wallet struct {
@@ -34,7 +33,7 @@ func NewWallet() *Wallet {
 func (w Wallet) GetAddress() []byte {
 	pubKeyHash := HashPubKey(w.PublicKey)
 
-	versionedPayload := append([]byte{version}, pubKeyHash...)
+	versionedPayload := append([]byte{ver}, pubKeyHash...)
 	checksum := checksum(versionedPayload)
 
 	fullPayload := append(versionedPayload, checksum...)
@@ -82,11 +81,11 @@ type Wallets struct {
 	Wallets map[string]*Wallet
 }
 
-func NewWallets() (*Wallets, error) {
+func NewWallets(nodeID string) (*Wallets, error) {
 	wallets := Wallets{}
 	wallets.Wallets = make(map[string]*Wallet)
 
-	err := wallets.LoadFromFile()
+	err := wallets.LoadFromFile(nodeID)
 
 	return &wallets, err
 }
@@ -114,31 +113,27 @@ func (ws Wallets) GetWallet(address string) Wallet {
 	return *ws.Wallets[address]
 }
 
-func (ws *Wallets) LoadFromFile() error {
+func (ws *Wallets) LoadFromFile(nodeID string) error {
+	walletFile := fmt.Sprintf(wallet, nodeID)
 	if _, err := os.Stat(walletFile); os.IsNotExist(err) {
 		return err
 	}
 
-	fileContent, err := ioutil.ReadFile(walletFile)
-	if err != nil {
-		log.Panic(err)
-	}
+	fileContent, _ := ioutil.ReadFile(walletFile)
 
 	var wallets Wallets
 	gob.Register(elliptic.P256())
 	decoder := gob.NewDecoder(bytes.NewReader(fileContent))
-	err = decoder.Decode(&wallets)
-	if err != nil {
-		log.Panic(err)
-	}
+	decoder.Decode(&wallets)
 
 	ws.Wallets = wallets.Wallets
 
 	return nil
 }
 
-func (ws Wallets) SaveToFile() {
+func (ws Wallets) SaveToFile(nodeID string) {
 	var content bytes.Buffer
+	walletFile := fmt.Sprintf(wallet, nodeID)
 
 	gob.Register(elliptic.P256())
 
