@@ -6,33 +6,38 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/boltdb/bolt"
+	"github.com/dgraph-io/badger/v3"
 	"log"
 	"os"
 )
 
-const boltDb = "bolt_%s.db"
-const bucket = "blocksBucket"
+const database = "b_%s.db"
+const prefix = "blocks"
 const genesisCoinbaseData = "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
 
 type Blockchain struct {
 	tip []byte
-	db  *bolt.DB
+	db  *badger.DB
 }
 
 func NewBlockchain(nodeID string) *Blockchain {
-	dbFile := fmt.Sprintf(boltDb, nodeID)
+	dbFile := fmt.Sprintf(database, nodeID)
 	if dbExists(dbFile) == false {
 		fmt.Println("No existing blockchain found. Create one first.")
 		os.Exit(1)
 	}
 
 	var tip []byte
-	db, _ := bolt.Open(dbFile, 0600, nil)
+	db, _ := badger.Open(badger.DefaultOptions(dbFile))
 
-	db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		tip = b.Get([]byte("l"))
+	db.Update(func(txn *badger.Txn) error {
+		//b := txn.Bucket([]byte(bucket))
+		item, _ := txn.Get([]byte(prefix + "l"))
+
+		_ = item.Value(func(val []byte) error {
+			tip = val
+			return nil
+		})
 
 		return nil
 	})
@@ -43,7 +48,7 @@ func NewBlockchain(nodeID string) *Blockchain {
 }
 
 func CreateBlockchain(address, nodeID string) *Blockchain {
-	dbFile := fmt.Sprintf(boltDb, nodeID)
+	dbFile := fmt.Sprintf(database, nodeID)
 	if dbExists(dbFile) {
 		fmt.Println("Blockchain already exists.")
 		os.Exit(1)
@@ -53,12 +58,13 @@ func CreateBlockchain(address, nodeID string) *Blockchain {
 	cbtx := NewCoinbaseTX(address, genesisCoinbaseData)
 	genesis := NewGenesisBlock(cbtx)
 
-	db, _ := bolt.Open(dbFile, 0600, nil)
+	db, _ := badger.Open(badger.DefaultOptions(dbFile))
 
-	db.Update(func(tx *bolt.Tx) error {
-		b, _ := tx.CreateBucket([]byte(bucket))
-		b.Put(genesis.Hash, genesis.Serialize())
-		b.Put([]byte("l"), genesis.Hash)
+	db.Update(func(txn *badger.Txn) error {
+		//b, _ := tx.CreateBucket([]byte(bucket))
+		p := []byte(prefix)
+		txn.Set(append(p, genesis.Hash...), genesis.Serialize())
+		txn.Set([]byte(prefix+"l"), genesis.Hash)
 
 		tip = genesis.Hash
 
@@ -70,26 +76,46 @@ func CreateBlockchain(address, nodeID string) *Blockchain {
 }
 
 func (bc *Blockchain) AddBlock(block *Block) {
-	bc.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		blockInDb := b.Get(block.Hash)
+	bc.db.Update(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		item, _ := txn.Get(append(p, block.Hash...))
+
+		var blockInDb []byte
+		_ = item.Value(func(val []byte) error {
+			blockInDb = val
+			return nil
+		})
 
 		if blockInDb != nil {
 			return nil
 		}
 
 		blockData := block.Serialize()
-		err := b.Put(block.Hash, blockData)
+		err := txn.Set(append(p, block.Hash...), blockData)
 		if err != nil {
 			log.Panic(err)
 		}
 
-		lastHash := b.Get([]byte("l"))
-		lastBlockData := b.Get(lastHash)
+		item, _ = txn.Get([]byte(prefix + "l"))
+
+		var lastHash []byte
+		_ = item.Value(func(val []byte) error {
+			lastHash = val
+			return nil
+		})
+
+		item, _ = txn.Get(append(p, lastHash...))
+
+		var lastBlockData []byte
+		_ = item.Value(func(val []byte) error {
+			lastBlockData = val
+			return nil
+		})
 		lastBlock := DeserializeBlock(lastBlockData)
 
 		if block.Height > lastBlock.Height {
-			err = b.Put([]byte("l"), block.Hash)
+			err = txn.Set([]byte(prefix+"l"), block.Hash)
 			if err != nil {
 				log.Panic(err)
 			}
@@ -103,10 +129,25 @@ func (bc *Blockchain) AddBlock(block *Block) {
 func (bc *Blockchain) GetBestHeight() int {
 	var lastBlock Block
 
-	bc.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		lastHash := b.Get([]byte("l"))
-		blockData := b.Get(lastHash)
+	bc.db.View(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		item, _ := txn.Get([]byte(prefix + "l"))
+
+		var lastHash []byte
+		_ = item.Value(func(val []byte) error {
+			lastHash = val
+			return nil
+		})
+
+		item, _ = txn.Get(append(p, lastHash...))
+
+		var blockData []byte
+		_ = item.Value(func(val []byte) error {
+			blockData = val
+			return nil
+		})
+
 		lastBlock = *DeserializeBlock(blockData)
 
 		return nil
@@ -118,10 +159,16 @@ func (bc *Blockchain) GetBestHeight() int {
 func (bc *Blockchain) GetBlock(blockHash []byte) (Block, error) {
 	var block Block
 
-	bc.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
+	bc.db.View(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		item, _ := txn.Get(append(p, blockHash...))
 
-		blockData := b.Get(blockHash)
+		var blockData []byte
+		_ = item.Value(func(val []byte) error {
+			blockData = val
+			return nil
+		})
 
 		if blockData == nil {
 			return errors.New("Block is not found.")
@@ -162,11 +209,24 @@ func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 		}
 	}
 
-	bc.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		lastHash = b.Get([]byte("l"))
+	bc.db.View(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		item, _ := txn.Get([]byte(prefix + "l"))
 
-		blockData := b.Get(lastHash)
+		_ = item.Value(func(val []byte) error {
+			lastHash = val
+			return nil
+		})
+
+		item, _ = txn.Get(append(p, lastHash...))
+
+		var blockData []byte
+		_ = item.Value(func(val []byte) error {
+			blockData = val
+			return nil
+		})
+
 		block := DeserializeBlock(blockData)
 
 		lastHeight = block.Height
@@ -176,10 +236,11 @@ func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 
 	newBlock := NewBlock(transactions, lastHash, lastHeight)
 
-	bc.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		b.Put(newBlock.Hash, newBlock.Serialize())
-		b.Put([]byte("l"), newBlock.Hash)
+	bc.db.Update(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		txn.Set(append(p, newBlock.Hash...), newBlock.Serialize())
+		txn.Set([]byte(prefix+"l"), newBlock.Hash)
 		bc.tip = newBlock.Hash
 
 		return nil
@@ -296,15 +357,22 @@ func dbExists(dbFile string) bool {
 
 type BlockchainIterator struct {
 	currentHash []byte
-	db          *bolt.DB
+	db          *badger.DB
 }
 
 func (i *BlockchainIterator) Next() *Block {
 	var block *Block
 
-	i.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(bucket))
-		encodedBlock := b.Get(i.currentHash)
+	i.db.View(func(txn *badger.Txn) error {
+		//b := tx.Bucket([]byte(bucket))
+		p := []byte(prefix)
+		item, _ := txn.Get(append(p, i.currentHash...))
+
+		var encodedBlock []byte
+		_ = item.Value(func(val []byte) error {
+			encodedBlock = val
+			return nil
+		})
 		block = DeserializeBlock(encodedBlock)
 
 		return nil
